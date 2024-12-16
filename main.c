@@ -20,7 +20,7 @@
 #define DATE_SIZE 16
 #define TIME_SIZE DATE_SIZE
 #define TITLE_SIZE 32
-#define STORE_SIZE 6
+#define STORE_SIZE 20
 #define CATEGORY_SIZE 16
 #define LOG_NAME_SIZE 64
 
@@ -110,16 +110,21 @@ Order constructOrder(char username[], int id, Item items[MAX_ITEMS], int nItems,
     return order;
 }
 
+
 typedef struct ThreadArgs {
     Order *orderPtr;
-    char **file_info;  // array of strings
+    char store[STORE_SIZE];
+    char category[CATEGORY_SIZE];
+    char file[FILE_PATH_SIZE];
     pid_t categoryPID;
 } ThreadArgs;
 
-ThreadArgs constructThreadArgs(Order *orderPtr, char **file_info, pid_t categoryPID) {
+ThreadArgs constructThreadArgs(Order *orderPtr, char store[STORE_SIZE], char category[CATEGORY_SIZE], char file[FILE_PATH_SIZE], pid_t categoryPID) {
     ThreadArgs threadArgs;
     threadArgs.orderPtr = orderPtr;
-    threadArgs.file_info = file_info;
+    strcpy(threadArgs.store, store);
+    strcpy(threadArgs.category, category);
+    strcpy(threadArgs.file, file);    
     threadArgs.categoryPID = categoryPID;
     return threadArgs;
 }
@@ -143,11 +148,11 @@ void printError(const char msg[]) {  // todo input
 }
 
 void printChildCreation(pid_t parent, pid_t child, const char msg[]) {
-    printf("PID %d create child  for %s PID: %d\n", parent, msg, child);
+    // printf("~ PID %d create child  for %s PID: %d\n", parent, msg, child);
 }
 
 void pirntThreadCreation(pid_t parent, pthread_t thread, const char msg[]) {
-    printf("PID %d create thread for %s TID: %ld\n", parent, msg, thread);
+    // printf("~ PID %d create thread for %s TID: %ld\n", parent, msg, thread);
 }
 
 int findItemInUserOrder(Item *items, int nItems, char *name) {
@@ -189,7 +194,7 @@ void log_match(Log *log) {
         return;
     }
 
-    fprintf(log_file, "Item: %s, Thread ID: %lu, Store: %s, Category: %s, File: %s, Category PID: %d\n",
+    fprintf(log_file, "Item: %s, Thread ID: %ld, Store: %s, Category: %s, File: %s, Category PID: %d\n",
             log->item, log->tid, log->store, log->category, log->file, log->categoryPID);
 
     fclose(log_file);
@@ -203,10 +208,10 @@ void *read_file(void *args) {
     // unpacking
     ThreadArgs *threadArgsPtr = (ThreadArgs *) args;
     
-    char **file_info = threadArgsPtr->file_info;
-    char *store = file_info[0];
-    char *category = file_info[1];
-    char *file = file_info[2];
+    //char ***file_info = threadArgsPtr->file_info;
+    // char *store = threadArgsPtr->store;
+    // char *category = threadArgsPtr->category;
+    // char *file = threadArgsPtr->file;
     
     Order *orderPtr = threadArgsPtr->orderPtr;
     Item *items = orderPtr->items;
@@ -216,7 +221,8 @@ void *read_file(void *args) {
     
     pid_t categoryPID = threadArgsPtr->categoryPID;
 
-    FILE *f = fopen(file, "r");
+    printf("file = %s ThreadID: %ld\n", threadArgsPtr->file,pthread_self());
+    FILE *f = fopen(threadArgsPtr->file, "r");
     if (f == NULL) {
         perror("Error opening file");
         pthread_exit(NULL);
@@ -268,8 +274,8 @@ void *read_file(void *args) {
         }
 
         // log file
-        Log log = constructLog(name, store, category, file, categoryPID, pthread_self(), username, orderId);
-        log_match(&log);
+        // Log log = constructLog(name, store, category, file, categoryPID, pthread_self(), username, orderId);
+        //log_match(&log);
 
 
     } else {  // not found
@@ -298,11 +304,22 @@ void handle_category(const char *store, const char *category_path, const char *c
         return;
     }
 
+    static int a = 1;
+    // printf("CATEGORY: %s", category_name);
+    // char *ptr = category_name;
+    // printf("#%d ", a++);
+    // while (*ptr)
+    // {
+    //     printf("%c", *(ptr++));
+    // }
+    // puts("");
+    // printf("%c",*category_name);
+
     struct dirent *entry;
     pthread_t threads[MAX_FILES];
     char *file_info[MAX_FILES][3];
     int thread_count = 0;
-
+    ThreadArgs args;
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_REG) { // Regular file
             char file_path[FILE_PATH_SIZE];
@@ -312,18 +329,26 @@ void handle_category(const char *store, const char *category_path, const char *c
             file_info[thread_count][0] = strdup(store);
             file_info[thread_count][1] = strdup(category_name);
             file_info[thread_count][2] = strdup(file_path);
-
-            // args
-            ThreadArgs args = constructThreadArgs(orderPtr, file_info, getpid());
+            // char mstore[STORE_SIZE];
+            // char mcategory[CATEGORY_SIZE];
+            // char mfile[FILE_PATH_SIZE];
+            // strcpy(mstore, store);
+            // strcpy(mcategory, category_name);
+            // strcpy(mfile, file_path);
             
-            // Create a thread for each file
+            // args
+            args = constructThreadArgs(orderPtr, file_info[thread_count][0], file_info[thread_count][1], file_info[thread_count][2], getpid());
+
+            //printf("file: %s\n", args.file);
+            //Create a thread for each file
             if (pthread_create(&threads[thread_count], NULL, read_file, &args) != 0) {
                 perror("Error creating thread");
             }
             thread_count++;
         }
     }
-
+    
+    //printf("------------Thread count initialized to %d asdasd %s\n", thread_count,category_name);
     // Wait for all threads to finish
     for (int i = 0; i < thread_count; i++) {
         pthread_join(threads[i], NULL);
@@ -339,6 +364,7 @@ void handle_category(const char *store, const char *category_path, const char *c
 
 
 void handleStore(Order *orderPtr, const char *store_path) {
+    static int a = 1;
 
     DIR *dir = opendir(store_path);
     if (dir == NULL) {
@@ -346,20 +372,36 @@ void handleStore(Order *orderPtr, const char *store_path) {
         return;
     }
     // Get store directory name from Path name
-    const char *store_name = strrchr(store_path, '/');
+    const char *tmp = strrchr(store_path, '/');
+    char *store_name;
+    strcpy(store_name, tmp+1);
     struct dirent *entry;
 
+
+
+    // printf("store path = %s\n", store_path);
+    // printf("store name = %s\n", store_name);
+    // printf("handleStore: PID(%d)\n", getpid());
 
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
             char category_path[256];
             snprintf(category_path, sizeof(category_path), "%s/%s", store_path, entry->d_name);
 
+            // printf("#%d store PID(%d) category path = %s\n", a++, getpid(), category_path);
             pid_t pid = fork();
 
-            if (pid == 0) { // Child process
+            if (pid < 0) {
+                printError("store fork() category failed");
+
+            } else if (pid == 0) { // Child process
+                // puts(category_path);
                 handle_category(store_name, category_path, entry->d_name, orderPtr);
-                exit(0); // Exit after handling the category
+                _exit(NULL); // Exit after handling the category
+
+            } else {  // parent
+
+                printChildCreation(getpid(), pid, category_path);
             }
         }
     }
@@ -423,6 +465,7 @@ void buyMenu() {
         if (store1Process < 0) {  // error
             printError("user fork() store1 failed");
         } else if (store1Process == 0) {  // child
+            printf("PID(%d) store1\n", getpid());
             handleStore(&order, "./Dataset/Store1");
 
             _exit(NULL); // todo ok?
@@ -436,6 +479,7 @@ void buyMenu() {
         if (store2Process < 0) {  // error
             printError("user fork() store2 failed");
         } else if (store2Process == 0) {  // child
+            printf("PID(%d) store2\n", getpid());
             handleStore(&order, "./Dataset/Store2");
 
             _exit(NULL); // todo ok?
@@ -449,15 +493,16 @@ void buyMenu() {
         if (store3Process < 0) {  // error
             printError("user fork() store3 failed");
         } else if (store3Process == 0) {  // child
+            printf("PID(%d) store3\n", getpid());
             handleStore(&order, "./Dataset/Store3");
 
             _exit(NULL); // todo ok?
         } else {
             printChildCreation(getpid(), store3Process, "Store3");
-
+            
         }
 
-
+        while(wait(NULL) > 0);
         _exit(NULL);  // todo ok?
 
     } else {  // parent
