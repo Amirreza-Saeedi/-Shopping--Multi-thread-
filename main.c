@@ -6,20 +6,26 @@
 #include <unistd.h>  // os system calls
 #include <stdbool.h>  // true, false
 #include <string.h>
-#include <limits.h>
+// #include <limits.h>  // CONFLICTS WITH dirnet.h
 #include <sys/wait.h>  // wait()
 #include <dirent.h>
 
 #define COMMAND_INPUT 20
 #define USRENAME_SIZE 20
-#define ITEM_NAME_SIZE 20
+#define ITEM_NAME_SIZE 32
 #define MAX_ITEMS 10
 #define INPUT_SIZE 100
-#define STORE_PATH 128
+#define FILE_PATH_SIZE 256
 #define MAX_FILES 100
+#define DATE_SIZE 16
+#define TIME_SIZE DATE_SIZE
+#define TITLE_SIZE 32
+#define STORE_SIZE 6
+#define CATEGORY_SIZE 16
+#define LOG_NAME_SIZE 64
 
-// Global Mutex for race condition protection
-pthread_mutex_t log_mutex;
+// Global Mutexs for race condition protection
+pthread_mutex_t log_mutex[3];
 
 // User's item list
 char *user_items[MAX_ITEMS];
@@ -27,16 +33,48 @@ int user_item_count = 0;
 
 // prototypes
 
-typedef struct ThreadArgs {
-    Order *orderPtr;
-    char **file_info;
-} ThreadArgs;
+typedef struct Log {
+    char item[ITEM_NAME_SIZE];
+    char store[STORE_SIZE];
+    char category[CATEGORY_SIZE];
+    char file[FILE_PATH_SIZE];
+    pid_t categoryPID;
+    pthread_t tid;
+    char username[USRENAME_SIZE];
+    int orderId;
+} Log;
 
-ThreadArgs constructThreadArgs(Order *orderPtr, char **file_info) {
-    ThreadArgs threadArgs;
-    threadArgs.orderPtr = orderPtr;
-    threadArgs.file_info = file_info;
-    return threadArgs;
+Log constructLog(char *item, char *store, char *category, char *file, pid_t categoryPID, pthread_t tid, char *username, int orderId) {
+    Log log;
+    strcpy(log.item, item);
+    strcpy(log.store, store);
+    strcpy(log.category, category);
+    strcpy(log.file, file);
+    log.categoryPID = categoryPID;
+    log.tid = tid;
+    strcpy(log.username, username);
+    log.orderId = orderId;
+    return log;
+}
+
+typedef struct FileContent {
+    char name[ITEM_NAME_SIZE];
+    float price;
+    float score;
+    int entity;
+    char date[DATE_SIZE];
+    char time[TIME_SIZE];
+} FileContent;
+
+FileContent constructFileContent(char *name, float price, float score, int entity, char *date, char *time) {
+    FileContent fileContent;
+    strcpy(fileContent.name, name);
+    fileContent.price = price;
+    fileContent.score = score;
+    fileContent.entity = entity;
+    strcpy(fileContent.date, date);
+    strcpy(fileContent.time, time);
+    return fileContent;
 }
 
 typedef struct Item {
@@ -72,6 +110,20 @@ Order constructOrder(char username[], int id, Item items[MAX_ITEMS], int nItems,
     return order;
 }
 
+typedef struct ThreadArgs {
+    Order *orderPtr;
+    char **file_info;  // array of strings
+    pid_t categoryPID;
+} ThreadArgs;
+
+ThreadArgs constructThreadArgs(Order *orderPtr, char **file_info, pid_t categoryPID) {
+    ThreadArgs threadArgs;
+    threadArgs.orderPtr = orderPtr;
+    threadArgs.file_info = file_info;
+    threadArgs.categoryPID = categoryPID;
+    return threadArgs;
+}
+
 void clr() {
     system("clear");
 }
@@ -98,64 +150,144 @@ void pirntThreadCreation(pid_t parent, pthread_t thread, const char msg[]) {
     printf("PID %d create thread for %s TID: %ld\n", parent, msg, thread);
 }
 
-int is_item_in_user_list(const char *item) {
-    for (int i = 0; i < user_item_count; i++) {
-        if (strcmp(user_items[i], item) == 0) { // TODO: check user_items 
-            return 1;
+int findItemInUserOrder(Item *items, int nItems, char *name) {
+    for (int i = 0; i < nItems; i++) {
+        if (strcmp(user_items[i], name) == 0) { // TODO: check user_items 
+            return i;
         }
     }
-    return 0;
+    return -1;
+}
+
+int getStoreIDFromName (char *name) {
+    switch (name[5])
+    {
+    case '1':
+        return 1;
+    case '2':
+        return 2;
+    case '3':
+        return 3;
+    default:
+        return -1;
+    }
 }
 
 // Function to log matched items
-void log_match(const char *item, const char *store, const char *category, const char *file, pthread_t tid) {
-    pthread_mutex_lock(&log_mutex); // Lock the log file for thread-safe access
+void log_match(Log *log) {
 
-    FILE *log_file = fopen("user1_log1.log", "a");
+    int storeID = getStoreIDFromName(log->store);
+    int mutexIdx = storeID - 1;
+    pthread_mutex_lock(&log_mutex[mutexIdx]); // Lock the log file for thread-safe access
+
+    char logFileName[LOG_NAME_SIZE];
+    sprintf(logFileName, "%s_%d.log", log->username, log->orderId);
+    FILE *log_file = fopen(logFileName, "a");
     if (log_file == NULL) {
-        perror("Error opening log file");
-        pthread_mutex_unlock(&log_mutex);
+        printError("Error opening log file");
+        pthread_mutex_unlock(&log_mutex[mutexIdx]);
         return;
     }
 
-    fprintf(log_file, "Item: %s, Thread ID: %lu, Store: %s, Category: %s, File: %s\n",
-            item, tid, store, category, file);
+    fprintf(log_file, "Item: %s, Thread ID: %lu, Store: %s, Category: %s, File: %s, Category PID: %d\n",
+            log->item, log->tid, log->store, log->category, log->file, log->categoryPID);
 
     fclose(log_file);
-    pthread_mutex_unlock(&log_mutex); // Unlock after writing
+    pthread_mutex_unlock(&log_mutex[mutexIdx]); // Unlock after writing
 }
+
 
 
 // thread task
 void *read_file(void *args) {
+    // unpacking
     ThreadArgs *threadArgsPtr = (ThreadArgs *) args;
+    
     char **file_info = threadArgsPtr->file_info;
-    // char **file_info = (char **)args;
     char *store = file_info[0];
     char *category = file_info[1];
     char *file = file_info[2];
+    
     Order *orderPtr = threadArgsPtr->orderPtr;
-    Item items[] = orderPtr->items;
-    int nItem = orderPtr->nItems;
+    Item *items = orderPtr->items;
+    int nItems = orderPtr->nItems;
+    int orderId = orderPtr->id;
+    char *username = orderPtr->username;
+    
+    pid_t categoryPID = threadArgsPtr->categoryPID;
 
-    FILE *fp = fopen(file, "r");
-    if (fp == NULL) {
+    FILE *f = fopen(file, "r");
+    if (f == NULL) {
         perror("Error opening file");
         pthread_exit(NULL);
     }
 
-    // name & score & entity
-    char line[256];
-    while (fgets(line, sizeof(line), fp)) {
-        char item[128], price[32], quantity[32];
-        if (sscanf(line, "%127s %31s %31s", item, price, quantity) == 3) {
-            if (is_item_in_user_list(item)) {
-                log_match(item, store, category, file, pthread_self());
-            }
+    char input[INPUT_SIZE];
+    char tmp[TITLE_SIZE];
+    // name
+    fgets(input, sizeof(input), f);
+    char name[ITEM_NAME_SIZE];
+    int idx = 6;
+    while (input[idx++] != '\n');
+    strncpy(name, input + 6, idx - 7);
+
+    // price
+    fgets(input, sizeof(input), f);
+    float price;
+    sscanf(input, "%s %f", tmp, &price);
+
+    // score
+    fgets(input, sizeof(input), f);
+    float score;
+    sscanf(input, "%s %f", tmp, &score);
+
+    // entity
+    fgets(input, sizeof(input), f);
+    int entity;
+    sscanf(input, "%s %d", tmp, &entity);
+
+    getc(f);  // \n
+
+    // date
+    fgets(input, sizeof(input), f);
+    char date[DATE_SIZE];
+    char time[TIME_SIZE];
+    sscanf(input, "%s %s %s %s", tmp, tmp, date, time);
+
+
+    FileContent fileContent = constructFileContent(name, price, score, entity, date, time);
+
+    // match name
+    int itemIdx = findItemInUserOrder(items, nItems, name);
+
+    // calculate buying-value
+    if (itemIdx > -1) {  // found
+        float buyingValue = price * score;
+        if (entity < items[itemIdx].quantity) {
+            buyingValue *= (float) entity / items[itemIdx].quantity;
         }
+
+        // log file
+        Log log = constructLog(name, store, category, file, categoryPID, pthread_self(), username, orderId);
+        log_match(&log);
+
+
+    } else {  // not found
+
     }
 
-    fclose(fp);
+
+    // while (fgets(line, sizeof(line), fp)) {
+    //     char item[128], price[32], quantity[32];
+    //     if (sscanf(line, "%127s %31s %31s", item, price, quantity) == 3) {
+    //         if (findItemInUserOrder(item)) {
+    //             log_match(item, store, category, file, pthread_self());
+    //         }
+    //     }
+    // }
+
+
+    fclose(f);
     pthread_exit(NULL);
 }
 
@@ -173,7 +305,7 @@ void handle_category(const char *store, const char *category_path, const char *c
 
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_REG) { // Regular file
-            char file_path[256];
+            char file_path[FILE_PATH_SIZE];
             snprintf(file_path, sizeof(file_path), "%s/%s", category_path, entry->d_name);
 
             // Allocate file info
@@ -181,9 +313,11 @@ void handle_category(const char *store, const char *category_path, const char *c
             file_info[thread_count][1] = strdup(category_name);
             file_info[thread_count][2] = strdup(file_path);
 
+            // args
+            ThreadArgs args = constructThreadArgs(orderPtr, file_info, getpid());
             
             // Create a thread for each file
-            if (pthread_create(&threads[thread_count], NULL, read_file, file_info[thread_count]) != 0) {
+            if (pthread_create(&threads[thread_count], NULL, read_file, &args) != 0) {
                 perror("Error creating thread");
             }
             thread_count++;
@@ -205,14 +339,16 @@ void handle_category(const char *store, const char *category_path, const char *c
 
 
 void handleStore(Order *orderPtr, const char *store_path) {
+
     DIR *dir = opendir(store_path);
     if (dir == NULL) {
         perror("Error opening store");
         return;
     }
     // Get store directory name from Path name
-    char *store_name = strrchr(store_path, '/');
+    const char *store_name = strrchr(store_path, '/');
     struct dirent *entry;
+
 
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
@@ -259,7 +395,7 @@ void buyMenu() {
         int orderId = getOrderId();
         int nItems;
         Item items[MAX_ITEMS];
-        printf("Number of items (max=%d): ", MAX_ITEMS);
+        printf("0 of items (max=%d): ", MAX_ITEMS);
         scanf("%d", &nItems);
         printf("ItemList%d <name> <quantity> (max=%d):\n", orderId, nItems);
         
