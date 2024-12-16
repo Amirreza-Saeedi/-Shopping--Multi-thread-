@@ -186,7 +186,9 @@ void log_match(Log *log) {
     pthread_mutex_lock(&log_mutex[mutexIdx]); // Lock the log file for thread-safe access
 
     char logFileName[LOG_NAME_SIZE];
-    sprintf(logFileName, "%s_%d.log", log->username, log->orderId);
+    char storeName[STORE_SIZE];
+    sprintf(storeName, "Store%d", storeID);
+    sprintf(logFileName, "Dataset/%s/%s_%d.log", storeName, log->username, log->orderId);
     FILE *log_file = fopen(logFileName, "a");
     if (log_file == NULL) {
         printError("Error opening log file");
@@ -346,7 +348,7 @@ void handle_category(const char *store, const char *category_path, const char *c
             // }
             ThreadArgs *args = (ThreadArgs*) malloc(sizeof(ThreadArgs));
             *args = constructThreadArgs(orderPtr, file_info[thread_count][0], file_info[thread_count][1], file_info[thread_count][2], getpid());
-            puts(args->file);
+            //puts(args->file);
             if (pthread_create(&threads[thread_count], NULL, read_file, args) != 0) {
                 perror("Error creating thread");
             }
@@ -357,7 +359,6 @@ void handle_category(const char *store, const char *category_path, const char *c
         }
     }
     
-    //printf("------------Thread count initialized to %d asdasd %s\n", thread_count,category_name);
     // Wait for all threads to finish
     for (int i = 0; i < thread_count; i++) {
         pthread_join(threads[i], NULL);
@@ -408,14 +409,14 @@ void handleStore(Order *orderPtr, const char *store_path) {
             } else if (pid == 0) { // Child process
                 // puts(category_path);
                 handle_category(store_name, category_path, entry->d_name, orderPtr);
-               _exit(0); // Exit after handling the category
+                _exit(0); // Exit after handling the category
 
             } else {  // parent
 
                 printChildCreation(getpid(), pid, category_path);
             }
             
-            break; // todo 
+            // break; // todo 
         }
     }
 
