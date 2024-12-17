@@ -23,6 +23,7 @@
 #define STORE_SIZE 20
 #define CATEGORY_SIZE 16
 #define LOG_NAME_SIZE 64
+#define MAX_STORES 3
 
 // Global Mutexs for race condition protection
 pthread_mutex_t log_mutex[3];
@@ -33,6 +34,20 @@ int user_item_count = 0;
 
 // prototypes
 
+typedef struct OrdersThread {
+    char username[USRENAME_SIZE];
+    int order_id;
+    float total_price;
+} OrdersThread;
+
+OrdersThread constructOrdersThread (char *username, int order_id, float total_price) {
+    OrdersThread ot;
+    strcpy(ot.username, username);
+    ot.order_id = order_id;
+    ot.total_price = total_price;
+    return ot;
+}
+
 typedef struct Log {
     char item[ITEM_NAME_SIZE];
     char store[STORE_SIZE];
@@ -42,9 +57,11 @@ typedef struct Log {
     pthread_t tid;
     char username[USRENAME_SIZE];
     int orderId;
+    float buyingValue;
+    float price;
 } Log;
 
-Log constructLog(char *item, char *store, char *category, char *file, pid_t categoryPID, pthread_t tid, char *username, int orderId) {
+Log constructLog(char *item, char *store, char *category, char *file, pid_t categoryPID, pthread_t tid, char *username, int orderId, float buyingValue, float price) {
     Log log;
     strcpy(log.item, item);
     strcpy(log.store, store);
@@ -54,6 +71,8 @@ Log constructLog(char *item, char *store, char *category, char *file, pid_t cate
     log.tid = tid;
     strcpy(log.username, username);
     log.orderId = orderId;
+    log.buyingValue = buyingValue;
+    log.price = price;
     return log;
 }
 
@@ -195,9 +214,9 @@ void log_match(Log *log) {
         pthread_mutex_unlock(&log_mutex[mutexIdx]);
         return;
     }
-
-    fprintf(log_file, "Item: %s, Thread ID: %ld, Store: %s, Category: %s, File: %s, Category PID: %d\n",
-            log->item, log->tid, log->store, log->category, log->file, log->categoryPID);
+    //Item,ThreadID,Store,Category,File,CategoryPID,buyingValue(float),price(float)"
+    fprintf(log_file, "%s,%ld,%s,%s,%s,%d,%f,%f\n",
+            log->item, log->tid, log->store, log->category, log->file, log->categoryPID,log->buyingValue,log->price);
 
     fclose(log_file);
     pthread_mutex_unlock(&log_mutex[mutexIdx]); // Unlock after writing
@@ -223,7 +242,7 @@ void *read_file(void *args) {
     
     pid_t categoryPID = threadArgsPtr->categoryPID;
 
-    printf("file = %s ThreadID: %ld\n", threadArgsPtr->file,pthread_self());
+    // printf("file = %s ThreadID: %ld\n", threadArgsPtr->file,pthread_self());
     FILE *f = fopen(threadArgsPtr->file, "r");
     if (f == NULL) {
         perror("Error opening file");
@@ -262,7 +281,6 @@ void *read_file(void *args) {
     char time[TIME_SIZE];
     sscanf(input, "%s %s %s %s", tmp, tmp, date, time);
 
-
     FileContent fileContent = constructFileContent(name, price, score, entity, date, time);
 
     // match name
@@ -270,29 +288,19 @@ void *read_file(void *args) {
 
     // calculate buying-value
     if (itemIdx > -1) {  // found
-        float buyingValue = price * score;
+        float buyingValue = score / price;
         if (entity < items[itemIdx].quantity) {
             buyingValue *= (float) entity / items[itemIdx].quantity;
         }
 
         // log file
-        Log log = constructLog(name, threadArgsPtr->store, threadArgsPtr->category, threadArgsPtr->file, categoryPID, pthread_self(), username, orderId);
+        Log log = constructLog(name, threadArgsPtr->store, threadArgsPtr->category, threadArgsPtr->file, categoryPID, pthread_self(), username, orderId, buyingValue, price);
         log_match(&log);
-
 
     } else {  // not found
 
     }
 
-
-    // while (fgets(line, sizeof(line), fp)) {
-    //     char item[128], price[32], quantity[32];
-    //     if (sscanf(line, "%127s %31s %31s", item, price, quantity) == 3) {
-    //         if (findItemInUserOrder(item)) {
-    //             log_match(item, store, category, file, pthread_self());
-    //         }
-    //     }
-    // }
 
     fclose(f);
     free(args);
@@ -331,13 +339,7 @@ void handle_category(const char *store, const char *category_path, const char *c
             file_info[thread_count][0] = strdup(store);
             file_info[thread_count][1] = strdup(category_name);
             file_info[thread_count][2] = strdup(file_path);
-            // char mstore[STORE_SIZE];
-            // char mcategory[CATEGORY_SIZE];
-            // char mfile[FILE_PATH_SIZE];
-            // strcpy(mstore, store);
-            // strcpy(mcategory, category_name);
-            // strcpy(mfile, file_path);
-            
+      
             // args
             //args = constructThreadArgs(orderPtr, file_info[thread_count][0], file_info[thread_count][1], file_info[thread_count][2], getpid());
 
@@ -426,6 +428,76 @@ void handleStore(Order *orderPtr, const char *store_path) {
     closedir(dir);
 }
 
+void parse_log_file(const char *filepath, float *sum_buyingValue, float *sum_price) {
+    FILE *file = fopen(filepath, "r");
+    if (!file) {
+        perror("Error opening file");
+        return;
+    }
+
+    char line[INPUT_SIZE];
+
+    while (fgets(line, sizeof(line), file)) {
+        float buyingValue, price;
+
+        // Parsing each line assuming the format is:
+        // Item,ThreadID,Store,Category,File,CategoryPID,buyingValue,price(float)
+        if (sscanf(line, "%*[^,],%*[^,],%*[^,],%*[^,],%*[^,],%*[^,],%f,%f", &buyingValue, &price) == 2) {
+            *sum_buyingValue += buyingValue;
+            *sum_price += price;
+
+            // Debugging to check each parsed price
+            printf("price = %f\n", price);
+        } else {
+            printf("Failed to parse line: %s", line);
+        }
+    }
+
+    fclose(file);
+}
+
+void *ordersThreadTask(void *args) {
+    OrdersThread *otPtr = (OrdersThread*) args;
+    char logname[LOG_NAME_SIZE];
+    snprintf(logname, sizeof(logname), "%s_%d.log", otPtr->username, otPtr->order_id);
+
+    float maxSumBuyingValue = 0.0;
+    float maxSumPrice = 0.0;
+    int maxIndex = -1;
+    char maxFilePath[FILE_PATH_SIZE] = {0};
+    const char *storeDirs[MAX_STORES] = {
+        "Store1", "Store2", "Store3"
+    };
+
+    for (int i = 0; i < MAX_STORES; i++) {
+        char filepath[FILE_PATH_SIZE];
+        snprintf(filepath, sizeof(filepath), "./Dataset/%s/%s", storeDirs[i], logname);
+
+        float sum_buyingValue = 0.0;
+        float sum_price = 0.0;
+
+        parse_log_file(filepath, &sum_buyingValue, &sum_price);
+        printf("Sum of buyingValue for file %s: %.2f, Sum of price: %.2f\n", filepath, sum_buyingValue, sum_price);
+
+        if (sum_buyingValue > maxSumBuyingValue) {
+            maxSumBuyingValue = sum_buyingValue;
+            maxSumPrice = sum_price;
+            maxIndex = i;
+            strncpy(maxFilePath, filepath, sizeof(maxFilePath) - 1);
+        }
+    }
+
+    if (maxIndex != -1) {
+        printf("File with the highest sum buyingValue and price: %s\nSum buyingValue: %.2f\nSum price: %.2f\n", maxFilePath, maxSumBuyingValue, maxSumPrice);
+    } else {
+        printf("No valid log files found.\n");
+    }
+
+    otPtr->total_price = maxSumPrice;
+    ((OrdersThread*) args)->total_price = maxSumPrice;
+    // return (void*) &maxSumPrice;
+}
+
 void buyMenu() {
     puts("\tBUY MENU");
 
@@ -462,6 +534,25 @@ void buyMenu() {
             char input[INPUT_SIZE];  // todo fgets & sscanf
             printf("#%d. ", i + 1);
             scanf("%s %d", name, &quantity);
+            getchar();
+            char line[INPUT_SIZE];
+            // fgets(line, sizeof(line), stdin); // Read the full input line
+
+            // // Parse the input, where name includes everything before the number
+            // if (sscanf(line, "%[^\t\n0-9] %d", name, &quantity) == 2) {
+            //     // Remove trailing spaces from the name
+            //     int len = strlen(name);
+            //     while (len > 0 && name[len - 1] == ' ') {
+            //         name[len - 1] = '\0';
+            //         len--;
+            //     }
+            //     printf("Full Name: '%s'\n", name);
+            //     printf("Quantity: %d\n", quantity);
+            // } else {
+            //     printf("Invalid input format.\n");
+            //     i--;
+            //     continue;
+            // }
             items[i] = constructItem(name, quantity);
         }
 
@@ -489,34 +580,52 @@ void buyMenu() {
         }
 
         // store2
-        // pid_t store2Process = fork();
-        // if (store2Process < 0) {  // error
-        //     printError("user fork() store2 failed");
-        // } else if (store2Process == 0) {  // child
-        //     // printf("PID(%d) store2\n", getpid());
-        //     handleStore(&order, "./Dataset/Store2");
+        pid_t store2Process = fork();
+        if (store2Process < 0) {  // error
+            printError("user fork() store2 failed");
+        } else if (store2Process == 0) {  // child
+            // printf("PID(%d) store2\n", getpid());
+            handleStore(&order, "./Dataset/Store2");
 
-        //    _exit(0); // todo ok?
-        // } else {
-        //     printChildCreation(getpid(), store2Process, "Store2");
+           _exit(0); // todo ok?
+        } else {
+            printChildCreation(getpid(), store2Process, "Store2");
 
-        // }
+        }
 
         // store3
-        // pid_t store3Process = fork();
-        // if (store3Process < 0) {  // error
-        //     printError("user fork() store3 failed");
-        // } else if (store3Process == 0) {  // child
-        //     // printf("PID(%d) store3\n", getpid());
-        //     handleStore(&order, "./Dataset/Store3");
+        pid_t store3Process = fork();
+        if (store3Process < 0) {  // error
+            printError("user fork() store3 failed");
+        } else if (store3Process == 0) {  // child
+            // printf("PID(%d) store3\n", getpid());
+            handleStore(&order, "./Dataset/Store3");
 
-        //    _exit(0); // todo ok?
-        // } else {
-        //     printChildCreation(getpid(), store3Process, "Store3");
+           _exit(0); // todo ok?
+        } else {
+            printChildCreation(getpid(), store3Process, "Store3");
             
-        // }
+        }
 
         while(wait(NULL) > 0);
+
+
+        // thread creation
+        // username
+        // order id
+        OrdersThread *otPtr = (OrdersThread*) malloc(sizeof(OrdersThread));
+        *otPtr = constructOrdersThread(username, orderId, 0.0);
+        pthread_create(&ordersThread, NULL, ordersThreadTask, otPtr);
+    
+        // all thread join
+        void *returnValue;
+        pthread_join(ordersThread, NULL);
+        printf("total price = %f\n", otPtr->total_price);
+        // otPtr->total_price = *((float*)returnValue);
+
+        // free otPtr
+        free(otPtr);
+
        _exit(0);  // todo ok?
 
     } else {  // parent
