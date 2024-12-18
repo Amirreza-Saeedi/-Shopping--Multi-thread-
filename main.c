@@ -28,11 +28,24 @@
 // Global Mutexs for race condition protection
 pthread_mutex_t log_mutex[3];
 
-// User's item list
-char *user_items[MAX_ITEMS];
-int user_item_count = 0;
-
 // prototypes
+void clr();
+void pressAnyKeyToContinue();
+int getOrderId();
+void printError(const char msg[]);
+void printChildCreation(pid_t parent, pid_t child, const char msg[]);
+void pirntThreadCreation(pid_t parent, pthread_t thread, const char msg[]);
+int findItemInUserOrder(Item *items, int nItems, char *name);
+int getStoreIDFromName (char *name);
+void log_match(Log *log);
+void *read_file(void *args);
+void handle_category(const char *store, const char *category_path, const char *category_name, Order *orderPtr);
+void handleStore(Order *orderPtr, const char *store_path);
+void parse_log_file(const char *filepath, float *sum_buyingValue, float *sum_price);
+void *ordersThreadTask(void *args);
+void buyMenu();
+void printMenu();
+void menu();
 
 typedef struct OrdersThread {
     char username[USRENAME_SIZE];
@@ -158,7 +171,7 @@ void pressAnyKeyToContinue() {
     getchar();
 }
 
-int getOrderId() {
+int getOrderId() {  // todo to get user last order id
     return 0;
 }
 
@@ -176,7 +189,7 @@ void pirntThreadCreation(pid_t parent, pthread_t thread, const char msg[]) {
 
 int findItemInUserOrder(Item *items, int nItems, char *name) {
     for (int i = 0; i < nItems; i++) {
-        if (strcmp(items[i].name, name) == 0) { // TODO: check user_items 
+        if (strcmp(items[i].name, name) == 0) { 
             return i;
         }
     }
