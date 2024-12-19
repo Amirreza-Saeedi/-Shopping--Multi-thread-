@@ -10,6 +10,8 @@
 #include <sys/wait.h>  // wait()
 #include <dirent.h>
 #include <ctype.h>
+#include <sys/mman.h>
+#include <semaphore.h>
 
 #define COMMAND_INPUT 20
 #define USERNAME_SIZE 20
@@ -65,19 +67,19 @@ typedef struct FileContent {
 } FileContent;
 
 Product products[MAX_FILES];  // 1-dimensional array to store all products
+WriteBuffer *writeBuffers;
+ReadBuffer *readBuffers;
+pthread_mutex_t *files_mutex;
+OperationType *operations;
+FileContent *fileContents;
 int product_count = 0;           // Number of products added
 pthread_t threads[MAX_FILES];
-WriteBuffer writeBuffers[MAX_FILES];
-ReadBuffer readBuffers[MAX_FILES];
-pthread_mutex_t files_mutex[MAX_FILES];
-OperationType operations[MAX_FILES];
-FileContent fileContents[MAX_FILES];
 // Global Mutexs for race condition protection
 pthread_mutex_t log_mutex[3];  // TODO
 
 
 // prototypes
-
+// Construct functions
 ReadBuffer constructReadBuffer(int quantity, char username[USERNAME_SIZE], int order_id) {
     ReadBuffer rb;
     rb.quantity = quantity;
@@ -85,7 +87,6 @@ ReadBuffer constructReadBuffer(int quantity, char username[USERNAME_SIZE], int o
     rb.order_id = order_id;
     return rb;
 }
-
 
 WriteBuffer constructWriteBuffer(char date[DATE_SIZE], char time[TIME_SIZE], float score) {
     WriteBuffer wb;
@@ -163,22 +164,25 @@ Item constructItem(char *name, int quantity) {
 
 typedef struct Order {
     int id;
-    char username[USERNAME_SIZE];
+    char username[30];
     int nItems;
     Item items[MAX_ITEMS];
     float threshold;
+    // sem_t *semaphore;  // Shared semaphore
 } Order;
 
-Order constructOrder(char username[], int id, Item items[MAX_ITEMS], int nItems, float threshold) {
-    Order order;
-    strcpy(order.username, username);
-    order.id = id;
-    order.nItems = nItems;
+Order *constructOrder(const char *username, int id, Item items[MAX_ITEMS], int nItems, float threshold) {
+    Order *o = (Order *) malloc(sizeof(Order));
+    strcpy(o->username, username);
+    o->id = id;
+    o->nItems = nItems;
     for (int i = 0; i < nItems; i++) {
-        order.items[i] = items[i];
+        o->items[i] = items[i];
     }
-    order.threshold = threshold;
-    return order;
+    o->threshold = threshold;
+    // o->semaphore = (sem_t *) mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    // sem_init(o->semaphore, 1, nItems * 3);  // Shared semaphore
+    return o;
 }
 
 typedef struct ThreadArgs {
@@ -218,11 +222,11 @@ void printError(const char msg[]) {  // todo input
 }
 
 void printChildCreation(pid_t parent, pid_t child, const char msg[]) {
-    printf("~ PID %d create child  for %s PID: %d\n", parent, msg, child);
+    //printf("~ PID %d create child  for %s PID: %d\n", parent, msg, child);
 }
 
 void pirntThreadCreation(pid_t parent, pthread_t thread, const char msg[]) {
-    printf("~ PID %d create thread for %s TID: %ld\n", parent, msg, thread);
+    //printf("~ PID %d create thread for %s TID: %ld\n", parent, msg, thread);
 }
 
 int findItemInUserOrder(Item *items, int nItems, char *name) {
@@ -266,6 +270,10 @@ void log_match(Log *log) {
     char storeName[STORE_SIZE];
     sprintf(storeName, "Store%d", storeID);
     sprintf(logFileName, "Dataset/%s/%s_%d.log", storeName, log->username, log->orderId);
+
+    printf("Store%d\n", storeID);
+    printf("Dataset/%s/%s_%d.log\n", storeName, log->username, log->orderId);
+    
     FILE *log_file = fopen(logFileName, "a");
     if (log_file == NULL) {
         printError("Error opening log file");
@@ -280,109 +288,52 @@ void log_match(Log *log) {
     pthread_mutex_unlock(&log_mutex[mutexIdx]); // Unlock after writing
 }
 
-
-
-// thread task
-// void *read_file(void *args) {
-//     // unpacking
-//     ThreadArgs *threadArgsPtr = (ThreadArgs *) args;
-    
-//     Order *orderPtr = threadArgsPtr->orderPtr;
-//     Item *items = orderPtr->items;
-//     int nItems = orderPtr->nItems;
-//     int orderId = orderPtr->id;
-//     char *username = orderPtr->username;
-    
-//     pid_t categoryPID = threadArgsPtr->categoryPID;
-
-//     // printf("file = %s ThreadID: %ld\n", threadArgsPtr->file,pthread_self());
-//     FILE *f = fopen(threadArgsPtr->file, "r");
-//     if (f == NULL) {
-//         perror("Error opening file");
-//         pthread_exit(NULL);
-//     }
-
-//     char input[INPUT_SIZE];
-//     char tmp[TITLE_SIZE];
-//     // name
-//     fgets(input, sizeof(input), f);
-//     char name[ITEM_NAME_SIZE];
-//     int idx = 6;
-//     while (input[idx++] != '\n');
-//     strncpy(name, input + 6, idx - 7);
-
-//     // price
-//     fgets(input, sizeof(input), f);
-//     float price;
-//     sscanf(input, "%s %f", tmp, &price);
-
-//     // score
-//     fgets(input, sizeof(input), f);
-//     float score;
-//     sscanf(input, "%s %f", tmp, &score);
-
-//     // entity
-//     fgets(input, sizeof(input), f);
-//     int entity;
-//     sscanf(input, "%s %d", tmp, &entity);
-
-//     getc(f);  // \n
-
-//     // date
-//     fgets(input, sizeof(input), f);
-//     char date[DATE_SIZE];
-//     char time[TIME_SIZE];
-//     sscanf(input, "%s %s %s %s", tmp, tmp, date, time);
-
-//     FileContent fileContent = constructFileContent(name, price, score, entity, date, time);
-
-//     // match name
-//     int itemIdx = findItemInUserOrder(items, nItems, name);
-
-//     // calculate buying-value
-//     if (itemIdx > -1) {  // found
-//         float buyingValue = score / price;
-//         if (entity < items[itemIdx].quantity) {
-//             buyingValue *= (float) entity / items[itemIdx].quantity;
-//         }
-
-//         // log file
-//         Log log = constructLog(name, threadArgsPtr->store, threadArgsPtr->category, threadArgsPtr->file, categoryPID, pthread_self(), username, orderId, buyingValue, price);
-//         log_match(&log);
-
-//     } else {  // not found
-        
-//     }
-
-
-//     fclose(f);
-//     free(args);
-//     pthread_exit(NULL);
-// }
-
 int getIndexProductName(const char *name, const char *store, const char*category) {
     int i;
     for (i = 0; i < MAX_FILES; i++) {
-        if (strncmp(name, products[i].name, MAX_NAME_LENGTH) == 0)
-            if (strncmp(category, products[i].category, MAX_NAME_LENGTH) == 0) 
+        if (strncmp(name, products[i].name, MAX_NAME_LENGTH) == 0) {
+            if (strncmp(category, products[i].category, MAX_NAME_LENGTH) == 0) {
                 if (getStoreIDFromName(store) == products[i].storeNumber)
                     return i;
+            } else {
+                return -2;  // not matched category
+            }
+        } 
     }
-    return -1;   
+    return -1;  // not found item
 }
 
 void handle_category(const char *store, const char *category_path, const char *category_name, Order *orderPtr) {
 
     for (int i = 0; i < orderPtr->nItems; i++)
     {
-        int index = getIndexProductName(orderPtr->items[i].name, store,category_name);
-        if (index != -1) {
-            printf("~~~ %s, %s, %s\n", orderPtr->items[i].name, store,category_name);
 
+        int index = getIndexProductName(orderPtr->items[i].name, store,category_name);
+        if (index >= 0) {
+
+            pthread_mutex_lock(&files_mutex[index]);
+            readBuffers[index] = constructReadBuffer(orderPtr->items[i].quantity, orderPtr->username, orderPtr->id);
+            operations[index] = OPERATION_READ;
+            pthread_mutex_unlock(&files_mutex[index]);
+            
+            int value;
+            // sem_getvalue(orderPtr->semaphore, &value);
+            // printf("sem in category: %d\n", value);
+
+            // sem_wait(orderPtr->semaphore);
+            // puts("&&& hooray");
+        } else if (index == -2) {
+            int value;
+            // sem_getvalue(orderPtr->semaphore, &value);
+            // printf("-2 sem in category: %d\n", value);
+            // printf("--------------------------\n");
+            // sem_trywait(orderPtr->semaphore);
         } else {  // not found in this store and category
-            printf("!!! %s, %s\n", store,category_name);
+            // printf("!!! %s, %s\n", store,category_name);
 
         }
+
+        // break;  // TODO
     }
     
     
@@ -550,23 +501,6 @@ void buyMenu() {
             scanf("%s %d", name, &quantity);
             getchar();
             char line[INPUT_SIZE];
-            // fgets(line, sizeof(line), stdin); // Read the full input line
-
-            // // Parse the input, where name includes everything before the number
-            // if (sscanf(line, "%[^\t\n0-9] %d", name, &quantity) == 2) {
-            //     // Remove trailing spaces from the name
-            //     int len = strlen(name);
-            //     while (len > 0 && name[len - 1] == ' ') {
-            //         name[len - 1] = '\0';
-            //         len--;
-            //     }
-            //     printf("Full Name: '%s'\n", name);
-            //     printf("Quantity: %d\n", quantity);
-            // } else {
-            //     printf("Invalid input format.\n");
-            //     i--;
-            //     continue;
-            // }
             items[i] = constructItem(name, quantity);
         }
 
@@ -581,7 +515,7 @@ void buyMenu() {
         }
 
         // order
-        Order order = constructOrder(username, orderId, items, nItems, threshold);
+        Order *order = constructOrder(username, orderId, items, nItems, threshold);
 
         // 3 store processes 
         // store1
@@ -590,7 +524,7 @@ void buyMenu() {
             printError("user fork() store1 failed");
         } else if (store1Process == 0) {  // child
             // printf("PID(%d) store1\n", getpid());
-            handleStore(&order, "./Dataset/Store1");
+            handleStore(order, "./Dataset/Store1");
 
            _exit(0); // todo ok?
         } else {
@@ -604,7 +538,7 @@ void buyMenu() {
             printError("user fork() store2 failed");
         } else if (store2Process == 0) {  // child
             // printf("PID(%d) store2\n", getpid());
-            handleStore(&order, "./Dataset/Store2");
+            handleStore(order, "./Dataset/Store2");
 
            _exit(0); // todo ok?
         } else {
@@ -618,7 +552,7 @@ void buyMenu() {
             printError("user fork() store3 failed");
         } else if (store3Process == 0) {  // child
             // printf("PID(%d) store3\n", getpid());
-            handleStore(&order, "./Dataset/Store3");
+            handleStore(order, "./Dataset/Store3");
 
            _exit(0); // todo ok?
         } else {
@@ -626,21 +560,23 @@ void buyMenu() {
             
         }
 
+
         while(wait(NULL) > 0);
-
-
-        // thread creation
-        // username
-        // order id
+        sleep(10);
+        // orders thread
+        // int value = 1;
+        // while(value) {  // busy waiting
+        //     sem_getvalue(order->semaphore, &value);
+        //     printf("sem val: %d\n", value);
+        //     sleep(3);
+        // }
         OrdersThread *otPtr = (OrdersThread*) malloc(sizeof(OrdersThread));
         *otPtr = constructOrdersThread(username, orderId, 0.0);
         pthread_create(&ordersThread, NULL, ordersThreadTask, otPtr);
     
         // all thread join
-        void *returnValue;
         pthread_join(ordersThread, NULL);
         printf("total price = %f\n", otPtr->total_price);
-        // otPtr->total_price = *((float*)returnValue);
 
         // free otPtr
         free(otPtr);
@@ -735,18 +671,22 @@ FileContent read_file(int index) {
 void *thread_task(void *arg) {
     //products[index]
     int index = *(int *)arg; // Thread-specific file index
-    printf("index: %d\n", index);
+    //printf("index: %d\n", index);
 
     // globals
     
-
-
     while (1) {
         pthread_mutex_lock(&files_mutex[index]); // Lock the file data
         OperationType operation = operations[index];
 
-        if (operation == OPERATION_READ) {
+        // if (strcmp(products[index].name, "Jeans") == 0 && products[index].storeNumber == 1)
+        // {
+        //     printf("^^^ name(%s), thread(%lu), op(%d)\n", products[index].name, pthread_self(), operation);
+        // }
+        
 
+        if (operation == OPERATION_READ) {
+            
             fileContents[index] = read_file(index);
 
             FileContent *fc = &fileContents[index];
@@ -764,12 +704,11 @@ void *thread_task(void *arg) {
             sprintf(store, "Store%d", p->storeNumber);
             char path[FILE_PATH_SIZE];
             setFilepath(p, path);
-
             Log log = constructLog(p->name, store, p->category, path, getpid(), pthread_self(), 
                 rb->username, rb->order_id, buyingValue, fc->price);
             log_match(&log);
 
-            operation = OPERATION_NONE; // Reset operation after reading
+            operations[index] = OPERATION_NONE; // Reset operation after reading
 
         } else if (operation == OPERATION_WRITE) {
             // Perform file write operation
@@ -778,31 +717,31 @@ void *thread_task(void *arg) {
                 printf("Thread %d writing to file: %s\n", index, products[index].filename);
                 
                 
-                
-                // Example write logic
-                // fprintf(file, "Order ID: %d\n", readBuffers[index].order_id);
-                // fprintf(file, "Data: %s\n", readBuffers[index].data);
-                
+  
 
 
                 fclose(file);
             } else {
                 perror("Error opening file for write");
             }
-            operation = OPERATION_NONE; // Reset operation after writing
+            operations[index] = OPERATION_NONE; // Reset operation after writing
         }
 
         pthread_mutex_unlock(&files_mutex[index]); // Unlock the file data
-        usleep(10000); // Avoid busy waiting (adjust as needed)
+        sleep(1); // Avoid busy waiting (adjust as needed)
     }
 
     return NULL;
 }
 
 void initial_thread(int index) {
-    printf("init index: %d\n", index);
+    //printf("init index: %d\n", index);
     int *i = (int *) malloc(sizeof(int));
     *i = index;
+    
+    pthread_mutex_init(&files_mutex[index],NULL);
+    operations[index] = OPERATION_NONE;
+
     if (pthread_create(&threads[index], NULL, thread_task, i) != 0) {
         printError("thread creation failed!");
     }
@@ -865,7 +804,6 @@ void process_stores_and_categories() {
                                 strncpy(products[product_count].filename, filename, MAX_PATH_LENGTH - 1);
                             }
 
-                            pthread_mutex_init(&files_mutex[product_count],NULL);
                             initial_thread(product_count);
                             
                             product_count++;
@@ -905,13 +843,44 @@ void menu() {
 
 int main(int argc, char const *argv[]) {   
     
+        // Allocate shared memory
+    size_t shared_memory_size = sizeof(WriteBuffer) * MAX_FILES +
+                                sizeof(ReadBuffer) * MAX_FILES +
+                                sizeof(pthread_mutex_t) * MAX_FILES +
+                                sizeof(OperationType) * MAX_FILES +
+                                sizeof(FileContent) * MAX_FILES;
+
+    // Create shared memory region
+    void *shared_memory = mmap(NULL, shared_memory_size, PROT_READ | PROT_WRITE,
+                               MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (shared_memory == MAP_FAILED) {
+        perror("mmap failed");
+        exit(1);
+    }
+
+    // Initialize pointers to shared memory
+    writeBuffers = (WriteBuffer *)shared_memory;
+    readBuffers = (ReadBuffer *)(writeBuffers + MAX_FILES);
+    files_mutex = (pthread_mutex_t *)(readBuffers + MAX_FILES);
+    operations = (OperationType *)(files_mutex + MAX_FILES);
+    fileContents = (FileContent *)(operations + MAX_FILES);
+
+    
+    // Initialize mutexes
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (pthread_mutex_init(&files_mutex[i], NULL) != 0) {
+            perror("Mutex initialization failed");
+            exit(1);
+        }
+    }
+
     for (int i = 0; i < 3; i++) {
         pthread_mutex_init(&log_mutex[i], NULL);
     }
     
     process_stores_and_categories();
 
-    puts("Hello World!");
+    //puts("Hello World!");
     // clr();
     menu();
     
