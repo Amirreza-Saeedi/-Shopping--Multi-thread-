@@ -9,6 +9,7 @@
 // #include <limits.h>  // CONFLICTS WITH dirnet.h
 #include <sys/wait.h>  // wait()
 #include <dirent.h>
+#include <ctype.h>
 
 #define COMMAND_INPUT 20
 #define USERNAME_SIZE 20
@@ -240,7 +241,7 @@ void setFilepath(Product *p, char *filepath) {
 
 }
 
-int getStoreIDFromName (char *name) {
+int getStoreIDFromName (const char *name) {
     switch (name[5])
     {
     case '1':
@@ -376,10 +377,10 @@ void handle_category(const char *store, const char *category_path, const char *c
     {
         int index = getIndexProductName(orderPtr->items[i].name, store,category_name);
         if (index != -1) {
-            printf("~~~ %s, %d, %s\n", orderPtr->items[i].name, store,category_name);
+            printf("~~~ %s, %s, %s\n", orderPtr->items[i].name, store,category_name);
 
         } else {  // not found in this store and category
-            printf("!!! %d, %s\n", store,category_name);
+            printf("!!! %s, %s\n", store,category_name);
 
         }
     }
@@ -799,7 +800,10 @@ void *thread_task(void *arg) {
 }
 
 void initial_thread(int index) {
-    if (pthread_create(&threads[index], NULL, thread_task, &index) != 0) {
+    printf("init index: %d\n", index);
+    int *i = (int *) malloc(sizeof(int));
+    *i = index;
+    if (pthread_create(&threads[index], NULL, thread_task, i) != 0) {
         printError("thread creation failed!");
     }
 }
@@ -861,11 +865,11 @@ void process_stores_and_categories() {
                                 strncpy(products[product_count].filename, filename, MAX_PATH_LENGTH - 1);
                             }
 
-                            pthread_mutex_init(&files_mutex[i],NULL);
+                            pthread_mutex_init(&files_mutex[product_count],NULL);
                             initial_thread(product_count);
                             
                             product_count++;
-                            break;
+                            // break;
                         }
                     }
 
