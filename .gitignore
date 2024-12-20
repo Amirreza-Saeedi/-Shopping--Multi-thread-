@@ -9,3 +9,5 @@ Dataset/codetest.c
 test*.*
 *.log
 test*
+myfile.c
+test.c
