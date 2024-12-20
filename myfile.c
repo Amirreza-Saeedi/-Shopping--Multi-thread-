@@ -1,117 +1,69 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
-#include <ctype.h>
 
-#define MAX_PATH_LENGTH 50
-#define MAX_NAME_LENGTH 30
-#define MAX_FILES 2000
-#define MAX_STORES 3
+// Function to check if username:storename exists in userdiscount.log
+int checkUserStore(const char *username, const char *storename) {
+    const char *file_path = "./userdiscount.log";
+    FILE *file = fopen(file_path, "r");
+    if (!file) {
+        perror("Unable to open file");
+        return 0;
+    }
 
-typedef struct {
-    char name[MAX_NAME_LENGTH];
-    int storeNumber;
-    char category[MAX_NAME_LENGTH];
-    char filename[MAX_PATH_LENGTH];  // Save filename too
-} Product;
+    char line[256];
+    int found = 0; // Flag to indicate if the username:storename pair is found
 
-Product products[MAX_FILES];  // 1-dimensional array to store all products
-int product_count = 0;           // Number of products added
+    while (fgets(line, sizeof(line), file)) {
+        // Remove newline character if present
+        line[strcspn(line, "\n")] = '\0';
 
-// Trim whitespace from a string
-char *trim_whitespace(char *str) {
-    char *end;
-    while (isspace((unsigned char)*str)) str++;
-    if (*str == 0) return str;
-    end = str + strlen(str) - 1;
-    while (end > str && isspace((unsigned char)*end)) end--;
-    *(end + 1) = '\0';
-    return str;
-}
+        // Parse the line and check if it matches username:storename
+        char *delimiter = strchr(line, ':');
+        if (delimiter) {
+            *delimiter = '\0'; // Split the string into username and storename
+            const char *file_username = line;
+            const char *file_storename = delimiter + 1;
 
-// Process everything in a single function
-void process_stores_and_categories() {
-    const char *stores[] = { "./Dataset/Store1", "./Dataset/Store2", "./Dataset/Store3" };
-    const char *categories[] = { "Apparel", "Beauty", "Digital", "Food", "Home", "Market", "Sports", "Toys" };
-
-    for (int i = 0; i < 3; i++) {
-        printf("Processing Store %d\n", i + 1);
-
-        for (int j = 0; j < 8; j++) {
-            char category_path[MAX_PATH_LENGTH];
-            snprintf(category_path, sizeof(category_path), "%s/%s", stores[i], categories[j]);
-
-            DIR *dir = opendir(category_path);
-            if (!dir) {
-                perror("Error opening category directory");
-                continue;
+            if (strcmp(file_username, username) == 0 && strcmp(file_storename, storename) == 0) {
+                found = 1; // Pair found
+                break;
             }
-
-            struct dirent *entry;
-            while ((entry = readdir(dir)) != NULL) {
-                if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
-
-                char filepath[MAX_PATH_LENGTH];
-                snprintf(filepath, sizeof(filepath), "%s/%s", category_path, entry->d_name);
-
-                if (entry->d_type == DT_REG) {
-                    FILE *file = fopen(filepath, "r");
-                    if (!file) {
-                        perror("Error opening product file");
-                        continue;
-                    }
-
-                    char line[MAX_PATH_LENGTH];
-                    char name[MAX_NAME_LENGTH] = {0};
-
-                    while (fgets(line, sizeof(line), file)) {
-                        if (strncmp(line, "Name:", 5) == 0) {
-                            strncpy(name, trim_whitespace(line + 5), MAX_NAME_LENGTH - 1);
-
-                            if (product_count >= MAX_FILES) {
-                                printf("Reached the limit of stored products\n");
-                                fclose(file);
-                                closedir(dir);
-                                return;
-                            }
-
-                            // Save product information to the array
-                            strncpy(products[product_count].name, name, MAX_NAME_LENGTH - 1);
-                            products[product_count].storeNumber = i + 1;
-                            strncpy(products[product_count].category, categories[j], MAX_NAME_LENGTH - 1);
-
-                            const char *filename = strrchr(filepath, '/');
-                            if (filename) {
-                                filename++;  // Move past the '/'
-                                strncpy(products[product_count].filename, filename, MAX_PATH_LENGTH - 1);
-                            }
-
-                            product_count++;
-                            break;
-                        }
-                    }
-
-                    fclose(file);
-                }
-            }
-            closedir(dir);
         }
     }
+
+    fclose(file);
+    return found;
 }
 
-// Print all products stored in the 1-dimensional array
-void print_Products() {
-    for (int i = 0; i < product_count; i++) {
-        printf("Store %d | Category: %s | Product: %s | Filename: %s\n",
-               products[i].storeNumber, products[i].category, products[i].name, products[i].filename);
+int writeUserStore(const char *username, const char *storename) {
+    const char *file_path = "./userdiscount.log";
+    FILE *file = fopen(file_path, "a"); // Open in append mode
+    if (!file) {
+        perror("Unable to open file");
+        return 0;
     }
-    printf("Total products: %d\n", product_count);
+
+    // Write the pair in the format username:storename followed by a newline
+    if (fprintf(file, "\n%s:%s\n", username, storename) < 0) {
+        perror("Error writing to file");
+        fclose(file);
+        return 0;
+    }
+
+    fclose(file);
+    return 1; // Success
 }
 
 int main() {
-    process_stores_and_categories();
-    print_Products();
+    const char *username = "ads";
+    const char *storename = "sr";
+    //writeUserStore(username,storename);
+    if (checkUserStore(username, storename)) {
+        printf("The pair '%s:%s' exists in the log file.\n", username, storename);
+    } else {
+        printf("The pair '%s:%s' does not exist in the log file.\n", username, storename);
+    }
+
     return 0;
 }
