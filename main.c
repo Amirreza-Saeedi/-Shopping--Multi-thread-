@@ -425,6 +425,7 @@ void handle_category(const char *store, const char *category_path, const char *c
     for (int i = 0; i < orderPtr->nItems; i++)
     {
 
+        printf("Item: %s\n", orderPtr->items[i].name);
         int index = getIndexProductNameCategoryStore(orderPtr->items[i].name, store,category_name);
         if (index >= 0) {
 
@@ -439,7 +440,6 @@ void handle_category(const char *store, const char *category_path, const char *c
             // printf("!!! %s, %s\n", store,category_name);
         }
 
-        // break;  // TODO for debug
     }
 }
 
@@ -690,6 +690,7 @@ void buyMenu() {
 
         sprintf(output, "ItemList%d <name> <quantity> (max=%d):\n", orderId, nItems);
         printLightBlue(output);
+        getchar();  // \n
 
         for (int i = 0; i < nItems; i++) {
             // name & quantity
@@ -699,7 +700,6 @@ void buyMenu() {
             sprintf(output, "#%d. ", i + 1);
             printLightBlue(output);
 
-            getchar();  // \n
             parseWordsAndNumber(name, &quantity);
             char line[INPUT_SIZE];
             items[i] = constructItem(name, quantity);
