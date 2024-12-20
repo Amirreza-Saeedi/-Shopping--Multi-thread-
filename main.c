@@ -19,6 +19,7 @@
 #define ITEM_NAME_SIZE 32
 #define MAX_ITEMS 10
 #define INPUT_SIZE 255
+#define OUTPUT_SIZE INPUT_SIZE
 #define FILE_PATH_SIZE 256
 #define DATE_SIZE 16
 #define TIME_SIZE DATE_SIZE
@@ -54,8 +55,14 @@ typedef struct {
 } ScoreBuffer;
 
 typedef struct {
-
+    int quantity;
 } FinalBuffer;
+
+FinalBuffer constructFinalBuffer(int quantity) {
+    FinalBuffer fb;
+    fb.quantity = quantity;
+    return fb;
+}
 
 typedef struct {
     int quantity;
@@ -83,11 +90,14 @@ int product_count = 0;           // Number of products added
 pthread_t threads[MAX_FILES];
 // Global Mutexs for race condition protection
 pthread_mutex_t log_mutex[3];  // TODO
+pthread_mutex_t userdiscount_mutex;
 
 
 // prototypes
 void parseWordsAndNumber(char *words, int *number);
 void *scoresThreadTask(void *args);
+void *finalThreadTask(void *args);
+
 
 
 
@@ -109,19 +119,33 @@ ScoreBuffer constructScoreBuffer(char date[DATE_SIZE], char time[TIME_SIZE], flo
 }
 
 
+typedef struct {
+    int store_id;
+    float total_price;
+    float buying_value;
+} Basket;
+
+Basket constructBasket(int store_id, float total_price, float buying_value) {
+    Basket basket;
+    basket.store_id = store_id;
+    basket.total_price = total_price;
+    basket.buying_value = buying_value;
+    return basket;
+}
+
 typedef struct OrdersThread {
     char username[USERNAME_SIZE];
     int order_id;
-    float total_price;
-    int store_id;
+    Basket *baskets;
 } OrdersThread;
 
-OrdersThread constructOrdersThread (char *username, int order_id, float total_price, int store_id) {
+OrdersThread constructOrdersThread (char *username, int order_id) {
     OrdersThread ot;
     strcpy(ot.username, username);
     ot.order_id = order_id;
-    ot.total_price = total_price;
-    ot.store_id = store_id;
+
+    // TODO baskets?
+    ot.baskets = (Basket *) malloc(sizeof(Basket) * 3);  // TODO
     return ot;
 }
 
@@ -211,6 +235,18 @@ ScoresThread constructScoresThread(int store_id, Order *order) {
     return st;
 }
 
+typedef struct {
+    int final_store;
+    Order *order;
+    Basket *baskets;
+} FinalThread;
+
+FinalThread constructFinalThread(Order *order, Basket *b) {
+    FinalThread ft;
+    ft.order = order;
+    ft.baskets = b;
+    return ft;
+}
 
 typedef struct ThreadArgs {
     Order *orderPtr;
@@ -235,9 +271,19 @@ void clr() {
 }
 
 void pressAnyKeyToContinue() {
-    printf("Press any key to continue...");
+    printf("\033[0mPress any key to continue...");
     getchar();
     getchar();
+}
+
+void printLightBlue(const char *text) {
+    // ANSI escape code for light blue text
+    printf("\033[1;34m%s\033[0m", text);
+}
+
+void printYellow(const char *text) {
+    // ANSI escape code for yellow text
+    printf("\033[1;33m%s\033[0m", text);
 }
 
 int getOrderId(const char username[]) {
@@ -333,7 +379,7 @@ void log_match(Log *log) {
     sprintf(storeName, "Store%d", storeID);
     sprintf(logFileName, "Dataset/%s/%s_%d.log", storeName, log->username, log->orderId);
 
-    printf("Store%d\n", storeID);
+    // printf("Store%d\n", storeID);
     printf("Dataset/%s/%s_%d.log\n", storeName, log->username, log->orderId);
     
     FILE *log_file = fopen(logFileName, "a");
@@ -382,6 +428,8 @@ void handle_category(const char *store, const char *category_path, const char *c
         int index = getIndexProductNameCategoryStore(orderPtr->items[i].name, store,category_name);
         if (index >= 0) {
 
+            printf("CAT: %s\n", category_name);
+
             pthread_mutex_lock(&files_mutex[index]);
             readBuffers[index] = constructReadBuffer(orderPtr->items[i].quantity, orderPtr->username, orderPtr->id);
             operations[index] = OPERATION_READ;
@@ -411,9 +459,9 @@ void handleStore(Order *orderPtr, const char *store_path) {
 
     struct dirent *entry;
 
-    printf("handleStore: PID(%d)\n", getpid());
-    printf("store name = %s\n", store_name);
-    printf("store path = %s\n", store_path);
+    // printf("handleStore: PID(%d)\n", getpid());
+    // printf("store name = %s\n", store_name);
+    // printf("store path = %s\n", store_path);
 
     while ((entry = readdir(dir)) != NULL) {
         if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
@@ -465,13 +513,34 @@ void parse_log_file(const char *filepath, float *sum_buyingValue, float *sum_pri
             *sum_price += price;
 
             // Debugging to check each parsed price
-            printf("price = %f\n", price);
+            // printf("price = %f\n", price);
         } else {
             printf("Failed to parse line: %s", line);
         }
     }
 
     fclose(file);
+}
+
+void sortBasketsByBuyingValues(Basket baskets[]) {
+    Basket tmp;
+    if (baskets[0].buying_value < baskets[1].buying_value) {
+        tmp = baskets[0];
+        baskets[0] = baskets[1];
+        baskets[1] = tmp;
+    }
+    if (baskets[1].buying_value < baskets[2].buying_value)
+    {
+        tmp = baskets[1];
+        baskets[1] = baskets[2];
+        baskets[2] = tmp;
+    }
+    if (baskets[0].buying_value < baskets[1].buying_value)
+    {
+        tmp = baskets[0];
+        baskets[0] = baskets[1];
+        baskets[1] = tmp;
+    }
 }
 
 void *ordersThreadTask(void *args) {
@@ -496,7 +565,12 @@ void *ordersThreadTask(void *args) {
         float sum_price = 0.0;
 
         parse_log_file(filepath, &sum_buyingValue, &sum_price);
-        printf("Sum of buyingValue for file %s: %.2f, Sum of price: %.2f\n", filepath, sum_buyingValue, sum_price);
+        // printf("Sum of buyingValue for file %s: %.2f, Sum of price: %.2f\n", filepath, sum_buyingValue, sum_price);
+
+        otPtr->baskets[i].buying_value = sum_buyingValue;
+        otPtr->baskets[i].total_price = sum_price;
+        otPtr->baskets[i].store_id = i + 1;
+
 
         if (sum_buyingValue > maxSumBuyingValue) {
             bestStore = i + 1;
@@ -508,31 +582,41 @@ void *ordersThreadTask(void *args) {
     }
 
     if (maxIndex != -1) {
-        printf("File with the highest sum buyingValue and price: %s\nSum buyingValue: %.2f\nSum price: %.2f\n", maxFilePath, maxSumBuyingValue, maxSumPrice);
+        // printf("File with the highest sum buyingValue and price: %s\nSum buyingValue: %.2f\nSum price: %.2f\n", maxFilePath, maxSumBuyingValue, maxSumPrice);
     } else {
         printf("No valid log files found.\n");
     }
 
     // outputs
-    otPtr->total_price = maxSumPrice;
-    otPtr->store_id = bestStore;
+    // otPtr->total_price = maxSumPrice;
+    // otPtr->store_id = bestStore;
+
+    // sort
+    sortBasketsByBuyingValues(otPtr->baskets);
+    return NULL;
 }
 
 // Function to check if username:storename exists in userdiscount.log
 int checkUserStore(const char *username, const char *storename) {
+    // puts("checkUserStore");
     const char *file_path = "./userdiscount.log";
+    
+
     FILE *file = fopen(file_path, "r");
     if (!file) {
         perror("Unable to open file");
         return 0;
     }
 
-    char line[256];
+    char line[INPUT_SIZE];
     int found = 0; // Flag to indicate if the username:storename pair is found
+
 
     while (fgets(line, sizeof(line), file)) {
         // Remove newline character if present
         line[strcspn(line, "\n")] = '\0';
+
+        // printf("line: %s\n", line);
 
         // Parse the line and check if it matches username:storename
         char *delimiter = strchr(line, ':');
@@ -561,7 +645,7 @@ int writeUserStore(const char *username, const char *storename) {
     }
 
     // Write the pair in the format username:storename followed by a newline
-    if (fprintf(file, "\n%s:%s\n", username, storename) < 0) {
+    if (fprintf(file, "%s:%s\n", username, storename) < 0) {
         perror("Error writing to file");
         fclose(file);
         return 0;
@@ -576,7 +660,10 @@ void buyMenu() {
 
     // user
     char username[USERNAME_SIZE];
-    printf("Username (max=%d): ", USERNAME_SIZE);
+    char output[OUTPUT_SIZE];
+
+    sprintf(output, "Username (max=%d): ", USERNAME_SIZE);
+    printLightBlue(output);
     scanf("%s", username);
     // todo exit option
 
@@ -596,35 +683,36 @@ void buyMenu() {
         int orderId = getOrderId(username);
         int nItems;
         Item items[MAX_ITEMS];
-        printf("Number of items (max=%d): ", MAX_ITEMS);
+
+        sprintf(output, "Number of items (max=%d): ", MAX_ITEMS);
+        printLightBlue(output);
         scanf("%d", &nItems);
-        printf("ItemList%d <name> <quantity> (max=%d):\n", orderId, nItems);  // TODO with space
-        
+
+        sprintf(output, "ItemList%d <name> <quantity> (max=%d):\n", orderId, nItems);
+        printLightBlue(output);
+
         for (int i = 0; i < nItems; i++) {
             // name & quantity
             int quantity;
             char name[ITEM_NAME_SIZE];
-            // char input[INPUT_SIZE];  // todo fgets & sscanf
-            printf("#%d. ", i + 1);
-            // scanf("%s %d", name, &quantity);
-            getchar();
+
+            sprintf(output, "#%d. ", i + 1);
+            printLightBlue(output);
+
+            getchar();  // \n
             parseWordsAndNumber(name, &quantity);
-            // Display the results
-            printf("Words: \"%s\"\n", name);
-            printf("Integer: %d\n", quantity);
-            // getchar();
             char line[INPUT_SIZE];
             items[i] = constructItem(name, quantity);
         }
 
         // threshold
         float threshold;
-        printf("Thresholds (-1 default): ");
+        printLightBlue("Thresholds (-1 default): ");
         scanf("%f", &threshold);
 
-        if(threshold==-1.0)
+        if(threshold == -1.0)
         {
-            threshold =50.0;
+            threshold =500.0;
         }
 
         // order
@@ -675,31 +763,70 @@ void buyMenu() {
 
 
         while(wait(NULL) > 0);
-        sleep(10);  // TODO
+        sleep(5);  // TODO
 
         // orders thread
         OrdersThread *otPtr = (OrdersThread*) malloc(sizeof(OrdersThread));
-        *otPtr = constructOrdersThread(username, orderId, 0.0, 0);
+        *otPtr = constructOrdersThread(username, orderId);
         pthread_create(&ordersThread, NULL, ordersThreadTask, otPtr);
         pthread_join(ordersThread, NULL);
-    
 
-        // TODO final thread 
-        
+        // show baskets
+        printYellow("Baskets:\n");
+        for (int i = 0; i < MAX_STORES; i++) {
+            char output[OUTPUT_SIZE];
+            sprintf(output, "Store %d: buying_value = %.2f, total_price = %.2f\n", 
+                otPtr->baskets[i].store_id, otPtr->baskets[i].buying_value, otPtr->baskets[i].total_price);
+            // printf();
+            printYellow(output);
+        } 
+
+        if (otPtr->baskets[0].buying_value != 0) {  // dont check threshold
+
+            // final thread 
+            FinalThread *ftPtr = (FinalThread *) malloc(sizeof(FinalThread));
+            *ftPtr = constructFinalThread(order, otPtr->baskets);
+            pthread_create(&finalThread, NULL, finalThreadTask, ftPtr);
+            pthread_join(finalThread, NULL);
+            
+            int finalStore = ftPtr->final_store;
+            if (finalStore != -1) {  // if bought
+
+                printf("User '%s' order id '%d' store '%d' BOUGHT!\n", username, orderId, finalStore);
+
+                // scores thread
+                ScoresThread *stPtr = (ScoresThread*) malloc(sizeof(ScoresThread));
+                *stPtr = constructScoresThread(finalStore, order);
+
+                pthread_create(&scoresThread, NULL, scoresThreadTask, stPtr);
+                pthread_join(scoresThread, NULL);
+
+                // update userdiscount.log
+                char storeName[STORE_SIZE];
+                sprintf(storeName, "Store%d", finalStore);
+                pthread_mutex_lock(&userdiscount_mutex);
+                writeUserStore(username, storeName);
+                pthread_mutex_unlock(&userdiscount_mutex);
+
+                free(stPtr);
+                
+            } else {
+                printf("User '%s' order id '%d' NOT BOUGHT!\n", username, orderId);
+                
+            }
+
+            free(ftPtr);
+
+        } else {  // dont buy
+            printf("User '%s' order id '%d' NOT BOUGHT!\n", username, orderId);
+
+        }
 
 
-        // scores thread
-        int finalStore = otPtr->store_id;  // TODO
-        ScoresThread *stPtr = (ScoresThread*) malloc(sizeof(ScoresThread));
-        *stPtr = constructScoresThread(finalStore, order);
-        pthread_create(&scoresThread, NULL, scoresThreadTask, stPtr);
-        pthread_join(scoresThread, NULL);
-
-        // free otPtr
+        free(otPtr->baskets);
         free(otPtr);
-        free(stPtr);
 
-       _exit(0);  // todo ok?
+       _exit(0);
 
     } else {  // parent
         // todo
@@ -732,6 +859,56 @@ void setCurDate(char *str) {
     strftime(str, sizeof(str), "%Y-%m-%d", tm_info);
 }
 
+
+
+void *finalThreadTask(void *args) {
+    FinalThread *ft = (FinalThread *) args;
+    Order *o = ft->order;
+    Basket *baskets = ft->baskets;
+    int finalStore = -1;  // flag to not bought
+    float threashold = o->threshold;
+
+    int sw = 1;
+    for (int i = 0; i < MAX_STORES && sw; i++) {
+        char storeName[STORE_SIZE];
+        // printf("store id: %d\n", baskets[i].store_id);
+        sprintf(storeName, "Store%d", baskets[i].store_id);
+
+        // apply discount if available
+        int hasDiscount = checkUserStore(o->username, storeName);
+        float basketPrice = hasDiscount ? baskets[i].total_price / 10 : baskets[i].total_price;
+
+        printf("Basket Price: %.2f, Total Price: %.2f\n", basketPrice, baskets[i].total_price);
+
+        // check threshold
+        if (threashold >= basketPrice && basketPrice > 0) {  // if basketPrice == 0 dont buy
+            Item *items = o->items;
+            int nItems = o->nItems;
+
+            for (int j = 0; j < nItems; j++) {  // guaranteed at least one valid item exists
+                const char *itemName = items[j].name;
+                int index = getIndexProductNameStore(itemName, storeName);
+                if (index != -1) {
+
+                    pthread_mutex_lock(&files_mutex[index]);
+                    finalBuffers[index] = constructFinalBuffer(items[j].quantity);
+                    operations[index] = OPERATION_FINAL;
+                    pthread_mutex_unlock(&files_mutex[index]);
+
+                } else {  // not found
+                }
+            }        
+
+            finalStore = baskets[i].store_id;
+            sw = 0;
+        }
+    }
+    
+    // output
+    ft->final_store = finalStore;
+    return NULL;
+}
+
 void *scoresThreadTask(void *args) {
     // convert
     ScoresThread *st = (ScoresThread*) args;
@@ -745,15 +922,19 @@ void *scoresThreadTask(void *args) {
     for (int i = 0; i < nItems; i++) {
         const char *itemName = items[i].name;
         int index = getIndexProductNameStore(itemName, storeName);
+        
         if (index != -1) {
+            
+            // read user inputs
             char date[DATE_SIZE];
             setCurDate(date);
             char time[TIME_SIZE];
             setCurTime(time);
             int score;
-            printf("User '%s' enter item '%s' score: ", st->order->username, itemName);
+            char output[OUTPUT_SIZE];
+            sprintf(output, "User '%s' enter item '%s' score: ", st->order->username, itemName); 
+            printLightBlue(output);
             scanf("%d", &score);
-            // read user inputs
 
 
             pthread_mutex_lock(&files_mutex[index]);
@@ -768,6 +949,7 @@ void *scoresThreadTask(void *args) {
     
 
     free(scores);
+    return NULL;
 }
 
 // Trim whitespace from a string
@@ -843,8 +1025,11 @@ FileContent read_file(int index) {
     fgets(input, sizeof(input), f);
     char name[ITEM_NAME_SIZE];
     int idx = 6;
-    while (input[idx++] != '\n');
+    // printf("input: %s\n", input);
+    while (input[idx++] != '\n');  // TODO exception
     strncpy(name, input + 6, idx - 7);
+    name[idx - 7] = '\0';
+    // printf("name: %s\n", name);
 
     // price
     fgets(input, sizeof(input), f);
@@ -886,6 +1071,12 @@ void write_file(int index, FileContent *fc) {
         pthread_exit(NULL);
     }
 
+    // printf("Name: %s\n", fc->name);
+    // printf("Price: %.2f\n", fc->price);
+    // printf("Score: %.1f\n", fc->score);
+    // printf("Entity: %d\n\n", fc->entity);
+    // printf("Last Modified: %s %s\n", fc->date, fc->time);
+
     // Write the data in the specified format
     fprintf(f, "Name: %s\n", fc->name);
     fprintf(f, "Price: %.2f\n", fc->price);
@@ -924,9 +1115,10 @@ void *thread_task(void *arg) {
             Product *p = &products[index];
             
             // calculate buying-value
-            float buyingValue = fc->score / fc->price;
+            float buyingValue = 1000 * fc->score / fc->price;
             if (fc->entity < rb->quantity) {
-                buyingValue *= (float) fc->entity / rb->quantity;
+                // buyingValue *= (float) fc->entity / rb->quantity;
+                buyingValue = 0;  // TODO cuases not buying if not enough
             }
 
             // log file
@@ -936,22 +1128,24 @@ void *thread_task(void *arg) {
             setFilepath(p, path);
             Log log = constructLog(p->name, store, p->category, path, getpid(), pthread_self(), 
                 rb->username, rb->order_id, buyingValue, fc->price);
+            printf("STORE: %s\n", store);
             log_match(&log);
 
             operations[index] = OPERATION_NONE; // Reset operation after reading
 
         } else if (operation == OPERATION_SCORE) {
-
-            FILE *file = fopen(products[index].filename, "w");
+            char path[FILE_PATH_SIZE];
+            fileContents[index] = read_file(index);
+            setFilepath(&products[index], path);
+            FILE *file = fopen(path, "w");
             if (file) {
                 // printf("Thread %d writing to file: %s\n", index, products[index].filename);
                 
-                FileContent fc = read_file(index);
-                ScoreBuffer *sb = &scoreBuffers[index];
-                strcpy(fc.date, sb->date);
-                strcpy(fc.time, sb->time);
-                fc.score = (float) sb->score;  // TODO cal_score()
-                write_file(index, &fc);
+                FileContent *fc = &fileContents[index];                ScoreBuffer *sb = &scoreBuffers[index];
+                strcpy(fc->date, sb->date);
+                strcpy(fc->time, sb->time);
+                fc->score = (float) sb->score;  // TODO cal_score()
+                write_file(index, fc);
                 puts("&&& op score done");
 
                 fclose(file);
@@ -961,15 +1155,16 @@ void *thread_task(void *arg) {
             operations[index] = OPERATION_NONE; // Reset operation after writing
 
         } else if (operation == OPERATION_FINAL) {
-
-            FILE *file = fopen(products[index].filename, "w");
+            char path[FILE_PATH_SIZE];
+            setFilepath(&products[index], path);
+            fileContents[index] = read_file(index);
+            FILE *file = fopen(path, "w");
             if (file) {
                 // printf("Thread %d writing to file: %s\n", index, products[index].filename);
-                
-                FileContent fc = read_file(index);
-                FinalBuffer *fb = &scoreBuffers[index];
-                // TODO fb
-                write_file(index, &fc);
+                FileContent *fc = &fileContents[index];
+                FinalBuffer *fb = &finalBuffers[index];
+                fc->entity -= fb->quantity;  // guaranteed wouldn't be < 0
+                write_file(index, fc);
                 puts("$$$ op final done");
 
 
@@ -983,7 +1178,7 @@ void *thread_task(void *arg) {
         }
 
         pthread_mutex_unlock(&files_mutex[index]); // Unlock the file data
-        // sleep(1); // TODO Avoid busy waiting (adjust as needed)
+        sleep(1); // TODO Avoid busy waiting (adjust as needed)
     }
 
     return NULL;
@@ -1081,7 +1276,7 @@ void menu() {
         printMenu();
         char c = getc(stdin); // todo
         getchar();
-        printf("%c\n", c);
+        // printf("%c\n", c);
 
         switch (c)
         {
@@ -1124,6 +1319,8 @@ int main(int argc, char const *argv[]) {
 
     
     // Initialize mutexes
+    pthread_mutex_init(&userdiscount_mutex, NULL);
+
     for (int i = 0; i < MAX_FILES; i++) {
         if (pthread_mutex_init(&files_mutex[i], NULL) != 0) {
             perror("Mutex initialization failed");
