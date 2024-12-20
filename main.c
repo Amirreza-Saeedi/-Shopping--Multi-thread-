@@ -17,7 +17,7 @@
 #define USERNAME_SIZE 20
 #define ITEM_NAME_SIZE 32
 #define MAX_ITEMS 10
-#define INPUT_SIZE 100
+#define INPUT_SIZE 255
 #define FILE_PATH_SIZE 256
 #define DATE_SIZE 16
 #define TIME_SIZE DATE_SIZE
@@ -79,6 +79,9 @@ pthread_mutex_t log_mutex[3];  // TODO
 
 
 // prototypes
+void parseWordsAndNumber(char *words, int *number);
+
+
 // Construct functions
 ReadBuffer constructReadBuffer(int quantity, char username[USERNAME_SIZE], int order_id) {
     ReadBuffer rb;
@@ -295,8 +298,6 @@ int getIndexProductName(const char *name, const char *store, const char*category
             if (strncmp(category, products[i].category, MAX_NAME_LENGTH) == 0) {
                 if (getStoreIDFromName(store) == products[i].storeNumber)
                     return i;
-            } else {
-                return -2;  // not matched category
             }
         } 
     }
@@ -316,27 +317,12 @@ void handle_category(const char *store, const char *category_path, const char *c
             operations[index] = OPERATION_READ;
             pthread_mutex_unlock(&files_mutex[index]);
             
-            int value;
-            // sem_getvalue(orderPtr->semaphore, &value);
-            // printf("sem in category: %d\n", value);
-
-            // sem_wait(orderPtr->semaphore);
-            // puts("&&& hooray");
-        } else if (index == -2) {
-            int value;
-            // sem_getvalue(orderPtr->semaphore, &value);
-            // printf("-2 sem in category: %d\n", value);
-            // printf("--------------------------\n");
-            // sem_trywait(orderPtr->semaphore);
         } else {  // not found in this store and category
             // printf("!!! %s, %s\n", store,category_name);
-
         }
 
-        // break;  // TODO
+        // break;  // TODO for debug
     }
-    
-    
 }
 
 
@@ -353,9 +339,6 @@ void handleStore(Order *orderPtr, const char *store_path) {
     char store_name[STORE_SIZE];
     strcpy(store_name, tmp+1);  
 
-    // alo
-
-    
     struct dirent *entry;
 
     printf("handleStore: PID(%d)\n", getpid());
@@ -496,10 +479,15 @@ void buyMenu() {
             // name & quantity
             int quantity;
             char name[ITEM_NAME_SIZE];
-            char input[INPUT_SIZE];  // todo fgets & sscanf
+            // char input[INPUT_SIZE];  // todo fgets & sscanf
             printf("#%d. ", i + 1);
-            scanf("%s %d", name, &quantity);
+            // scanf("%s %d", name, &quantity);
             getchar();
+            parseWordsAndNumber(name, &quantity);
+            // Display the results
+            printf("Words: \"%s\"\n", name);
+            printf("Integer: %d\n", quantity);
+            // getchar();
             char line[INPUT_SIZE];
             items[i] = constructItem(name, quantity);
         }
@@ -611,6 +599,46 @@ char *trim_whitespace(char *str) {
     while (end > str && isspace((unsigned char)*end)) end--;
     *(end + 1) = '\0';
     return str;
+}
+
+void parseWordsAndNumber(char *words, int *number) {
+    char input[INPUT_SIZE];     // Input buffer
+    // printf("Enter words followed by an integer: ");
+    
+    // Read the entire line of input
+    if (fgets(input, sizeof(input), stdin) == NULL) {
+        printError("Error reading input.\n");
+        exit(1);
+    }
+
+    // Tokenize the input
+    char *token = strtok(input, " ");  // Split input by spaces
+    char temp[INPUT_SIZE] = "";         // Temporary buffer to store words
+    int lastInt = 0;                   // Temporary integer to check for the number
+    
+    while (token != NULL) {
+        // Check if the current token is an integer
+        char *endptr;
+        lastInt = strtol(token, &endptr, 10); // Convert to integer
+        
+        if (*endptr == '\0' || *endptr == '\n') { // If the token is a valid integer
+            *number = lastInt;  // Save the integer
+        } else {
+            // Append the word to the temporary buffer
+            strcat(temp, token);
+            strcat(temp, " ");  // Add space between words
+        }
+        
+        token = strtok(NULL, " "); // Move to the next token
+    }
+    
+    // Remove the trailing space from temp if it exists
+    if (strlen(temp) > 0) {
+        temp[strlen(temp) - 1] = '\0';
+    }
+    
+    // Copy the combined words into the words buffer
+    strcpy(words, temp);
 }
 
 FileContent read_file(int index) {
@@ -843,7 +871,7 @@ void menu() {
 
 int main(int argc, char const *argv[]) {   
     
-        // Allocate shared memory
+    // Allocate shared memory
     size_t shared_memory_size = sizeof(WriteBuffer) * MAX_FILES +
                                 sizeof(ReadBuffer) * MAX_FILES +
                                 sizeof(pthread_mutex_t) * MAX_FILES +
@@ -880,7 +908,6 @@ int main(int argc, char const *argv[]) {
     
     process_stores_and_categories();
 
-    //puts("Hello World!");
     // clr();
     menu();
     
