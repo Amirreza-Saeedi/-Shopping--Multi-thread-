@@ -216,8 +216,43 @@ void pressAnyKeyToContinue() {
     getchar();
 }
 
-int getOrderId() {  // TODO to get user last order id
-    return 0;
+int getOrderId(const char username[]) {
+    const char *directory_path = "./Dataset/Store1/";
+    DIR *dir = opendir(directory_path);
+    if (!dir) {
+        perror("Unable to open directory");
+        return -1;
+    }
+
+    struct dirent *entry;
+    int max_orderid = -1;
+    int found = 0; // Flag to track if any log file for the username is found
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type == DT_REG) { // Check if it's a regular file
+            const char *filename = entry->d_name;
+
+            // Check if the filename starts with the username
+            if (strncmp(filename, username, strlen(username)) == 0) {
+                // Find the underscore and dot positions
+                const char *underscore = strrchr(filename, '_');
+                const char *dot = strrchr(filename, '.');
+                if (underscore && dot && underscore < dot) {
+                    // Extract the order ID
+                    int orderid = atoi(underscore + 1);
+                    if (orderid > max_orderid) {
+                        max_orderid = orderid;
+                    }
+                    found = 1; // Mark that at least one file was found
+                }
+            }
+        }
+    }
+
+    closedir(dir);
+
+    // If no log file was found for the username, return 0
+    return found ? max_orderid+1 : 0;
 }
 
 void printError(const char msg[]) {  // todo input
@@ -446,6 +481,59 @@ void *ordersThreadTask(void *args) {
     // return (void*) &maxSumPrice;
 }
 
+// Function to check if username:storename exists in userdiscount.log
+int checkUserStore(const char *username, const char *storename) {
+    const char *file_path = "./userdiscount.log";
+    FILE *file = fopen(file_path, "r");
+    if (!file) {
+        perror("Unable to open file");
+        return 0;
+    }
+
+    char line[256];
+    int found = 0; // Flag to indicate if the username:storename pair is found
+
+    while (fgets(line, sizeof(line), file)) {
+        // Remove newline character if present
+        line[strcspn(line, "\n")] = '\0';
+
+        // Parse the line and check if it matches username:storename
+        char *delimiter = strchr(line, ':');
+        if (delimiter) {
+            *delimiter = '\0'; // Split the string into username and storename
+            const char *file_username = line;
+            const char *file_storename = delimiter + 1;
+
+            if (strcmp(file_username, username) == 0 && strcmp(file_storename, storename) == 0) {
+                found = 1; // Pair found
+                break;
+            }
+        }
+    }
+
+    fclose(file);
+    return found;
+}
+
+int writeUserStore(const char *username, const char *storename) {
+    const char *file_path = "./userdiscount.log";
+    FILE *file = fopen(file_path, "a"); // Open in append mode
+    if (!file) {
+        perror("Unable to open file");
+        return 0;
+    }
+
+    // Write the pair in the format username:storename followed by a newline
+    if (fprintf(file, "\n%s:%s\n", username, storename) < 0) {
+        perror("Error writing to file");
+        fclose(file);
+        return 0;
+    }
+
+    fclose(file);
+    return 1; // Success
+}
+
 void buyMenu() {
     puts("\tBUY MENU");
 
@@ -468,7 +556,7 @@ void buyMenu() {
                     finalThread;
       
         // item
-        int orderId = getOrderId();
+        int orderId = getOrderId(username);
         int nItems;
         Item items[MAX_ITEMS];
         printf("Number of items (max=%d): ", MAX_ITEMS);
