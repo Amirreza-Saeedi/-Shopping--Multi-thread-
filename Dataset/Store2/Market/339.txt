@@ -1,6 +1,6 @@
 Name: Milk
-Price: 363.1
+Price: 363.10
 Score: 3.6
-Entity: 20
+Entity: 18
 
 Last Modified: 2024-11-23 18:49:27

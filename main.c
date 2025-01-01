@@ -425,11 +425,11 @@ void handle_category(const char *store, const char *category_path, const char *c
     for (int i = 0; i < orderPtr->nItems; i++)
     {
 
-        printf("Item: %s\n", orderPtr->items[i].name);
+        // printf("Item: %s\n", orderPtr->items[i].name);
         int index = getIndexProductNameCategoryStore(orderPtr->items[i].name, store,category_name);
         if (index >= 0) {
 
-            printf("CAT: %s\n", category_name);
+            // printf("CAT: %s\n", category_name);
 
             pthread_mutex_lock(&files_mutex[index]);
             readBuffers[index] = constructReadBuffer(orderPtr->items[i].quantity, orderPtr->username, orderPtr->id);

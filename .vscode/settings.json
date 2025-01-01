@@ -1,0 +1,11 @@
+{
+    "files.associations": {
+        "stdlib.h": "c",
+        "pthread.h": "c",
+        "dirent.h": "c",
+        "stdio.h": "c",
+        "typeinfo": "c",
+        "semaphore.h": "c",
+        "time.h": "c"
+    }
+}

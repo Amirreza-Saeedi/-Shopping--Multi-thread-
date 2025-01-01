@@ -1,6 +1,6 @@
 Name: Milk
 Price: 785.99
-Score: 1.9
-Entity: 69
+Score: 1.0
+Entity: 68
 
-Last Modified: 2024-11-23 18:50:00
+Last Modified: 2024-12 23:52:
